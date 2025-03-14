@@ -5,7 +5,7 @@ import java.net.Socket;
 import java.util.Scanner;
 
 public class Main {
-    private static final String SERVER_IP = "192.168.1.104";
+    private static final String SERVER_IP = "192.168.1.106";
     private static final int SERVER_PORT = 5000;
     private static final String CLIENT_DIR = "client_files";
 
@@ -18,7 +18,7 @@ public class Main {
              DataOutputStream out = new DataOutputStream(socket.getOutputStream());
              Scanner scanner = new Scanner(System.in)) {
 
-            System.out.println("Подключено к серверу. Введите команду (UPLOAD/DOWNLOAD/EXIT/CLIENT(SERVER)_FILES):");
+            System.out.println("Подключено к серверу. Введите команду (UPLOAD/DOWNLOAD/EXIT/CLIENT_FILES/SERVER_FILES/ECHO/TIME):");
 
             while (true) {
                 System.out.print("> ");
@@ -37,6 +37,10 @@ public class Main {
                     sendFile(out, in, command.substring(7));
                 } else if (command.startsWith("DOWNLOAD ")) {
                     receiveFile(in, out, command.substring(9));
+                } else if (command.startsWith("ECHO ")) {
+                    System.out.println(in.readUTF());
+                } else if (command.equals("TIME")) {
+                    System.out.println(in.readUTF());
                 }
             }
         } catch (IOException e) {
@@ -65,18 +69,35 @@ public class Main {
             return;
         }
 
-        out.writeLong(file.length());
         long fileSize = file.length();
+        out.writeLong(fileSize);
+        System.out.println(fileSize);
+        long alreadySent = Long.parseLong(in.readUTF());
+        if (alreadySent >= fileSize) {
+            System.out.println("Файл уже полностью загружен.");
+            return;
+        }
+
         long startTime = System.nanoTime();
 
-        try (FileInputStream fis = new FileInputStream(file)) {
+        try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+            raf.seek(alreadySent);
+
             byte[] buffer = new byte[4096];
             int bytesRead;
-            long totalSent = 0;
+            long totalSent = alreadySent;
 
-            while ((bytesRead = fis.read(buffer)) != -1) {
+            while (totalSent < fileSize) {
+                int bytesToRead = (int) Math.min(buffer.length, fileSize - totalSent);
+                bytesRead = raf.read(buffer, 0, bytesToRead);
+
+                if (bytesRead == -1) {
+                    throw new IOException("Ошибка чтения файла.");
+                }
+
                 out.write(buffer, 0, bytesRead);
                 totalSent += bytesRead;
+
                 int progress = (int) ((totalSent * 100) / fileSize);
                 System.out.print("\rОтправка: " + progress + "%");
             }
@@ -100,16 +121,37 @@ public class Main {
 
         long fileSize = in.readLong();
         File file = new File(CLIENT_DIR, fileName);
-        long startTime = System.nanoTime();
+        long alreadyDownloaded = file.exists() ? file.length() : 0;
 
-        try (FileOutputStream fos = new FileOutputStream(file)) {
+        // Сообщаем серверу, сколько уже скачали
+        out.writeUTF(String.valueOf(alreadyDownloaded));
+
+        if (alreadyDownloaded >= fileSize) {
+            System.out.println("Файл уже полностью скачан.");
+            return;
+        }
+
+        long startTime = System.nanoTime();
+        try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+            raf.seek(alreadyDownloaded); // Перемещаемся к позиции возобновления
             byte[] buffer = new byte[4096];
             int bytesRead;
-            long totalReceived = 0;
+            long totalReceived = alreadyDownloaded;
 
-            while (totalReceived < fileSize && (bytesRead = in.read(buffer, 0, (int) Math.min(buffer.length, fileSize - totalReceived))) != -1) {
-                fos.write(buffer, 0, bytesRead);
+            while (totalReceived < fileSize) {
+                // Определяем, сколько байт можно прочитать за один раз
+                int bytesToRead = (int) Math.min(buffer.length, fileSize - totalReceived);
+                bytesRead = in.read(buffer, 0, bytesToRead);
+
+                if (bytesRead == -1) {
+                    throw new IOException("Соединение закрыто сервером во время передачи.");
+                }
+
+                // Записываем данные в файл
+                raf.write(buffer, 0, bytesRead);
                 totalReceived += bytesRead;
+
+                // Выводим прогресс
                 int progress = (int) ((totalReceived * 100) / fileSize);
                 System.out.print("\rЗагрузка: " + progress + "%");
             }
@@ -120,6 +162,10 @@ public class Main {
         double bitrate = (fileSize / 1024.0) / seconds;
 
         System.out.println("\nЗагрузка завершена. Скорость: " + String.format("%.2f", bitrate) + " КБ/с");
-        System.out.println(in.readUTF());
+
+
     }
+
+
+
 }
