@@ -3,6 +3,10 @@ package com.spoirs;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 public class Main {
     private static final int PORT = 5000;
@@ -18,8 +22,7 @@ public class Main {
             while (true) {
                 Socket clientSocket = serverSocket.accept();
                 System.out.println("Подключился клиент: " + clientSocket.getInetAddress());
-
-                (new ClientHandler(clientSocket)).start();
+                new ClientHandler(clientSocket).start();
             }
         } catch (IOException e) {
             System.err.println("Ошибка сервера: " + e.getMessage());
@@ -30,7 +33,7 @@ public class Main {
         private final Socket socket;
         private DataInputStream in;
         private DataOutputStream out;
-        private static final String SERVER_DIRECTORY = "server_files";  // Папка для файлов
+        private static final String SERVER_DIRECTORY = "server_files";
 
         public ClientHandler(Socket socket) {
             this.socket = socket;
@@ -39,8 +42,7 @@ public class Main {
                 out = new DataOutputStream(socket.getOutputStream());
 
                 File dir = new File(SERVER_DIRECTORY);
-                if (!dir.exists()) dir.mkdir(); // Создаем папку, если её нет
-
+                if (!dir.exists()) dir.mkdir();
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -62,6 +64,11 @@ public class Main {
                     } else if (command.equals("EXIT")) {
                         System.out.println("Клиент отключился.");
                         break;
+                    } else if (command.startsWith("ECHO ")) {
+                        out.writeUTF(command.substring(5)); // Отправляем обратно сообщение
+                    } else if (command.equals("TIME")) {
+                        String serverTime = new SimpleDateFormat("HH:mm:ss").format(new Date());
+                        out.writeUTF(serverTime);
                     }
                 }
             } catch (IOException e) {
@@ -93,22 +100,39 @@ public class Main {
         private void receiveFile(String fileName) throws IOException {
             File file = new File(SERVER_DIRECTORY, fileName);
 
+            long alreadyReceived = file.exists() ? file.length() : 0;
+            out.writeUTF(String.valueOf(alreadyReceived));
+
             long fileSize = in.readLong();
 
-            try (FileOutputStream fos = new FileOutputStream(file)) {
+            if (alreadyReceived >= fileSize) {
+                System.out.println("Файл уже полностью загружен.");
+                return;
+            }
+
+            try (RandomAccessFile raf = new RandomAccessFile(file, "rw")) {
+                raf.seek(alreadyReceived);
                 byte[] buffer = new byte[4096];
                 int bytesRead;
-                long totalRead = 0;
+                long totalReceived = alreadyReceived;
 
-                while (totalRead < fileSize && (bytesRead = in.read(buffer, 0, (int) Math.min(buffer.length, fileSize - totalRead))) != -1) {
-                    fos.write(buffer, 0, bytesRead);
-                    totalRead += bytesRead;
-                }
+                while (totalReceived < fileSize) {
+                    bytesRead = in.read(buffer);
+                    if (bytesRead == -1) {
+                        System.out.println("\nОшибка: клиент закрыл соединение раньше времени!");
+                        break;
+                    }
 
-                if (totalRead != fileSize) {
-                    throw new IOException("Прочитано меньше байтов, чем ожидалось: " + totalRead + " из " + fileSize);
+                    raf.write(buffer, 0, bytesRead);
+                    totalReceived += bytesRead;
+
+                    int progress = (int) ((totalReceived * 100) / fileSize);
+                    System.out.print("\rПолучение: " + progress + "%");
+
                 }
             }
+
+            System.out.println("\nФайл " + fileName + " успешно загружен.");
             out.writeUTF("Файл " + fileName + " успешно загружен.");
         }
 
@@ -122,17 +146,23 @@ public class Main {
             out.writeUTF("OK");
             out.writeLong(file.length());
 
-            try (FileInputStream fis = new FileInputStream(file)) {
+            long alreadySent = Long.parseLong(in.readUTF());
+            if (alreadySent >= file.length()) {
+                System.out.println("Клиент уже скачал файл.");
+                return;
+            }
+
+            try (RandomAccessFile raf = new RandomAccessFile(file, "r")) {
+                raf.seek(alreadySent);
                 byte[] buffer = new byte[4096];
                 int bytesRead;
-                while ((bytesRead = fis.read(buffer)) != -1) {
+                while ((bytesRead = raf.read(buffer)) != -1) {
                     out.write(buffer, 0, bytesRead);
                 }
                 out.flush();
             }
 
-            out.writeUTF("Файл " + fileName + " успешно отправлен.");
-        }
+            }
 
     }
 }
